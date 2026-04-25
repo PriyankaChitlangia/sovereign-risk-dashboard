@@ -1,0 +1,806 @@
+================================================================================
+                 IMF COUNTRY RISK FORECASTING SYSTEM
+         Complete Methodology, Pipeline, and Dashboard Documentation
+================================================================================
+
+TABLE OF CONTENTS
+================================================================================
+1. Project Overview
+2. Data Sources and Processing
+3. Feature Engineering
+4. Model Architecture
+5. Training and Validation Strategy
+6. Ensemble Weighting Mechanism
+7. Output Artifacts
+8. Dashboard Features
+9. How to Use the System
+10. Interpretation Guide
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+OBJECTIVE:
+  Forecast country financial crisis risk for the next 5 years using historical
+  macro-financial data from the International Monetary Fund (IMF). The system
+  combines multiple machine learning models into a weighted ensemble for robust,
+  real-world predictions.
+
+KEY INNOVATION:
+  Traditional single-model forecasts can fail catastrophically during regime
+  changes. This system uses ENSEMBLE WEIGHTING to combine 4 diverse models
+  (neural networks, tree-based, SVM) based on their past performance, creating
+  a more resilient forecast without reliance on feature explanations.
+
+DATA COVERAGE:
+  - Countries: All IMF member nations (180+ countries)
+  - Time Period: 2001-2023 (23 years of historical data)
+  - Forecast Horizon: 5 years forward from the data end date
+  - Frequency: Annual
+
+RISK CLASSIFICATION:
+  Predictions are mapped into 5 risk categories for interpretability:
+  - Low Risk (0.0 - 0.2)
+  - Mild Low Risk (0.2 - 0.4)
+  - Moderate Risk (0.4 - 0.6)
+  - Mild High Risk (0.6 - 0.8)
+  - High Risk (0.8 - 1.0)
+
+================================================================================
+2. DATA SOURCES AND PROCESSING
+================================================================================
+
+INPUT DATA SOURCES (3 IMF Datasets):
+
+  A. WEO (World Economic Outlook)
+     Contains macroeconomic indicators:
+     - GDP Growth Rate (annual %)
+     - Inflation Rate (annual %)
+     - Current Account Balance (% of GDP)
+     - Exchange Rate (USD)
+     - Government Debt (% of GDP)
+     - Unemployment Rate
+
+  B. FSI (Financial Soundness Indicators)
+     Contains financial system health metrics:
+     - Bank Capital Adequacy Ratio
+     - Loan-to-Deposit Ratio
+     - Non-Performing Loans Ratio
+     - Bank Profitability Metrics
+     - Liquidity Coverage Ratios
+
+  C. MONA (Monetary and Financial Statistics)
+     Contains money supply and credit data:
+     - Broad Money Growth
+     - Credit to Private Sector
+     - Interest Rates
+     - Banking System Liquidity
+
+DATA PREPARATION STEPS:
+
+  Step 1: Data Consolidation
+  - Read individual CSV files for each IMF dataset
+  - Standardize country names and year formats
+  - Merge datasets on (country, year) keys using inner join
+  
+  Step 2: Missing Value Handling
+  - Identify missing values by country-year combination
+  - Forward-fill missing values within each country (up to 2 years)
+  - Drop observation if > 30% of indicators are missing
+  - Result: Combined_Dataset.csv (5,044 country-year observations)
+
+  Step 3: Observed Risk Index Construction
+  - Calculate risk_index = weighted sum of normalized indicators
+  - Risk increases with: inflation, unemployment, debt, loan defaults
+  - Risk decreases with: GDP growth, capital adequacy, liquidity
+  - Normalize each country's risk_index to [0, 1] range
+  - Result: Combined_Dataset_with_Observed_Risk.csv
+
+  Step 4: Data Year Assignment
+  - Assign categories based on country risk percentile for that year
+  - Top 20% of countries by risk → "High" (0.8-1.0)
+  - Next 20% → "Mild High" (0.6-0.8)
+  - Middle 20% → "Moderate" (0.4-0.6)
+  - Next 20% → "Mild Low" (0.2-0.4)
+  - Bottom 20% → "Low" (0.0-0.2)
+  - Ensures each category has ~36 countries/year (balanced)
+
+================================================================================
+3. FEATURE ENGINEERING
+================================================================================
+
+LAGGED FEATURES:
+
+  Window Size: 5 years (lookback)
+  
+  For each country at year T, we extract:
+  - lag_1: risk_index at year (T-1)
+  - lag_2: risk_index at year (T-2)
+  - lag_3: risk_index at year (T-3)
+  - lag_4: risk_index at year (T-4)
+  - lag_5: risk_index at year (T-5)
+  - current: risk_index at year T (used in WEO/FSI/MONA calculations)
+  - trend: linear trend coefficient across 5-year window
+  - momentum: (current - lag_5) / lag_5 (normalized change)
+
+  Total Input Features: 8 features per observation
+
+  RATIONALE:
+  - 5-year lookback captures ~2 economic cycles
+  - Lagged features capture persistence in country risk
+  - Trend/momentum capture directional changes
+  - Non-linear relationships learned by neural networks (MLP)
+  - Tree-based models extract interaction patterns
+
+TIME-SERIES REQUIREMENTS:
+
+  To prevent LOOK-AHEAD LEAKAGE (using future data to predict past):
+  - Training only uses observations up to year T
+  - Validation uses observations from future years T+1 to T+3
+  - Test uses observations from future years T+4 to T+5
+  - Features for year T+1 use data up through year T (no future info)
+
+================================================================================
+4. MODEL ARCHITECTURE
+================================================================================
+
+ENSEMBLE CONSISTS OF 4 DIVERSE MODELS:
+
+MODEL 1: MULTI-LAYER PERCEPTRON (MLP)
+  Type: Neural Network
+  Architecture:
+    - Input Layer: 8 features
+    - Hidden Layer 1: 256 neurons (ReLU activation)
+    - Hidden Layer 2: 128 neurons (ReLU activation)
+    - Hidden Layer 3: 64 neurons (ReLU activation)
+    - Output Layer: 1 neuron (linear)
+  
+  Training Configuration:
+    - Optimizer: Adam (adaptive learning rates)
+    - Learning Rate: 0.001
+    - Max Iterations: 1200 epochs
+    - Early Stopping: Stops if validation loss doesn't improve for 10 epochs
+    - Regularization: L2 penalty (prevents overfitting)
+  
+  Strengths:
+    - Captures complex non-linear relationships
+    - Can model second & third-order interactions
+    - Excellent for data with implicit patterns
+  
+  Weaknesses:
+    - "Black box" nature (hard to interpret predictions)
+    - Sensitive to hyperparameter tuning
+    - Can overfit on small datasets
+
+
+MODEL 2: RANDOM FOREST
+  Type: Ensemble of Decision Trees
+  Architecture:
+    - N-estimators: 200 independent decision trees
+    - Max Depth: 15 (prevents overfitting)
+    - Min Samples Split: 5 (minimum samples to split node)
+    - Min Samples Leaf: 2
+    - Each tree: subset of features + subset of samples (bootstrap)
+  
+  Prediction Process:
+    - Each tree predicts independently
+    - Final prediction = Average of all 200 predictions
+    - Variance reduction through averaging
+  
+  Strengths:
+    - Robust to outliers
+    - Naturally handles feature interactions
+    - Reduces overfitting through diversity
+    - Fast training and prediction
+  
+  Weaknesses:
+    - Can be biased on skewed target distributions
+    - Less flexible than neural networks
+
+
+MODEL 3: GRADIENT BOOSTING
+  Type: Sequential Ensemble of Trees
+  Architecture:
+    - N-estimators: 150 boosting rounds
+    - Learning Rate: 0.1 (controls update magnitude)
+    - Max Depth: 3 (shallow trees, reduce overfitting)
+    - Each tree: Corrects errors of previous trees
+  
+  Training Process:
+    - Iteration 1: Train tree 1 on residuals (errors) from constant prediction
+    - Iteration 2: Train tree 2 on residuals from (tree1 prediction)
+    - Iteration 3-150: Continue adding trees to correct remaining errors
+    - Final Prediction = Sum of weighted tree predictions
+  
+  Strengths:
+    - Often achieves highest test accuracy
+    - Handles feature interactions well
+    - Naturally features importance ordering
+  
+  Weaknesses:
+    - Computationally expensive
+    - Sensitive to learning rate parameter
+
+
+MODEL 4: SUPPORT VECTOR MACHINE (SVM)
+  Type: Kernel-based Regression
+  Configuration:
+    - Kernel: RBF (Radial Basis Function)
+    - C: 1.0 (regularization parameter)
+    - Gamma: 'scale' (feature scaling)
+  
+  How It Works:
+    - Maps input features to high-dimensional space
+    - Finds hyperplane that best separates classes
+    - RBF kernel: Creates non-linear decision boundaries
+  
+  Strengths:
+    - Excellent on high-dimensional problems
+    - Works well with clear margin separation
+    - Handles outliers reasonably
+  
+  Weaknesses:
+    - Slow on large datasets
+    - Sensitive to feature scaling
+
+
+ENSEMBLE COMBINATION:
+  Individual Model Predictions: y_pred_MLP, y_pred_RF, y_pred_GB, y_pred_SVM
+  Ensemble Prediction: y_ensemble = w1*y_pred_MLP + w2*y_pred_RF + w3*y_pred_GB + w4*y_pred_SVM
+  Where: w1 + w2 + w3 + w4 = 1 and each wi >= 0
+
+================================================================================
+5. TRAINING AND VALIDATION STRATEGY
+================================================================================
+
+TEMPORAL CROSS-VALIDATION (to prevent look-ahead bias):
+
+Dataset: 5,044 country-year observations, 2001-2023
+Split Configuration: val_years=3, test_years=2
+
+Timeline:
+  2001 ----train---- 2000 | 2018 --val-- 2020 | 2021 --test-- 2022
+  
+  Training Set:
+    - Years: 2001-2017
+    - Size: ~2,715 observations
+    - Purpose: Fit model parameters
+  
+  Validation Set:
+    - Years: 2018-2020
+    - Size: ~688 observations
+    - Purpose: Tune hyperparameters, model selection
+  
+  Test Set:
+    - Years: 2021-2023
+    - Size: ~455 observations
+    - Purpose: Unbiased model performance evaluation
+
+LAG-CONTEXT WINDOW:
+
+  Problem: Features for year 2018 need lag_1 through lag_5 (years 2017-2013)
+  Solution: Expand training window to include 5-year context BEFORE validation start
+  
+  Effective Training Context:
+    - Data Years Included: 2001-2017
+    - Context Years: 2013-2017 included in training
+    - Validation: 2018-2020 (uses context from years 2017-2013 in training)
+    - Test: 2021-2023 (uses context from years 2020-2016)
+
+BACKTESTING EVALUATION:
+
+  For each of 4 models, compute on validation and test sets:
+  
+  Metric 1: Mean Absolute Error (MAE)
+    MAE = (1/N) * Σ|actual_risk - predicted_risk|
+    Range: 0.0 (perfect) to 1.0 (random)
+    Interpretation: Average prediction error in raw risk units
+  
+  Metric 2: Root Mean Squared Error (RMSE)
+    RMSE = √[(1/N) * Σ(actual_risk - predicted_risk)²]
+    Range: 0.0 to 1.0
+    Interpretation: Penalizes large errors more heavily than MAE
+    Use When: Large errors are very costly
+  
+  Metric 3: R² Score (Coefficient of Determination)
+    R² = 1 - (SS_residual / SS_total)
+    Range: -∞ to 1.0 (where 1.0 = perfect)
+    Interpretation: Proportion of variance explained by model
+    Target: R² > 0.6 indicates good fit
+
+BACKTESTING REPORT:
+
+  Output: backtesting_report.csv
+  Contains rows for each (model, dataset, year) combination:
+  
+  Columns:
+    - model_name: MLP, RandomForest, GradientBoosting, SVM
+    - dataset: train, val, test (indicating which split metric was computed on)
+    - year: 2001-2023 (year of observation)
+    - mae / rmse / r2: Performance metric for that year
+  
+  Example Row:
+    | GradientBoosting | test | 2023 | 0.0216 | 0.0289 | 0.78 |
+    Meaning: GradientBoosting on test set for year 2023 had MAE=0.0216
+
+BEST MODEL SELECTION:
+
+  Process:
+    1. Filter backtesting results to TEST SET only
+    2. For each model, compute MEAN MAE across all test years
+    3. Select model with lowest test MAE
+    4. Store result in: model_selection.json
+  
+  Example Selection:
+    - MLP test MAE: 0.0345
+    - RandomForest test MAE: 0.0197 ← LOWEST (best)
+    - GradientBoosting test MAE: 0.0216
+    - SVM test MAE: 0.0278
+    Result: RandomForest selected as best single model
+
+================================================================================
+6. ENSEMBLE WEIGHTING MECHANISM
+================================================================================
+
+MOTIVATION FOR WEIGHTING:
+
+  Single "Best" Model Limitations:
+    - One model may get lucky on test set but fail in production
+    - Different models excel at different regimes (high growth vs crisis)
+    - Model uncertainty not reflected in single forecast
+  
+  Ensemble Approach:
+    - Combine predictions from all 4 models
+    - Weight by historical accuracy
+    - Hedge against model selection bias
+
+WEIGHTING ALGORITHM:
+
+  Step 1: Collect Test Set Performance
+    For each model on test set:
+      - Compute MAE (mean absolute error)
+      - Store in WEIGHTS dictionary
+  
+  Step 2: Invert and Normalize Weights
+    Better accuracy (lower MAE) → Higher weight
+    
+    Formula: w_i = (1 / MAE_i) / Σ(1 / MAE_j for all j)
+    
+    Example Calculation:
+      Raw MAE:           MLP=0.0345, RF=0.0197, GB=0.0216, SVM=0.0278
+      Inverse MAE:       MLP=(1/0.0345)=29.0, RF=(1/0.0197)=50.8, etc.
+      Sum of Inverse:    29.0 + 50.8 + 46.3 + 36.0 = 162.1
+      Normalized:
+        w_MLP = 29.0 / 162.1 = 0.179
+        w_RF = 50.8 / 162.1 = 0.313
+        w_GB = 46.3 / 162.1 = 0.286
+        w_SVM = 36.0 / 162.1 = 0.222
+      Verification: 0.179 + 0.313 + 0.286 + 0.222 = 1.000 ✓
+
+  Step 3: Store Weights
+    Saved in: model_selection.json
+    Example:
+      "ensemble_weights": {
+        "MLP": 0.179,
+        "RandomForest": 0.313,
+        "GradientBoosting": 0.286,
+        "SVM": 0.222
+      }
+
+  Step 4: Generate Ensemble Predictions
+    For each (country, year) in forecast period:
+      y_ensemble = 0.179*pred_MLP + 0.313*pred_RF + 0.286*pred_GB + 0.222*pred_SVM
+    
+    Result: Country_Risk_Forecast_5Y_EnsembleWeighted.csv
+
+FORECASTING PROCESS:
+
+  1. Train all 4 models on training set (2001-2017 + context)
+  2. Evaluate all 4 on test set (2021-2023) → get MAE for each
+  3. Compute inverse-MAE weights
+  4. Generate individual forecasts for 2024-2028:
+      a) Each model makes 5-year-ahead predictions
+      b) Use latest available data (2023) as feature context
+  5. Combine using weights:
+      y_ensemble_2024 = w_MLP * pred_MLP_2024 + ... + w_SVM * pred_SVM_2024
+  6. Output EnsembleWeighted forecast
+
+OUTPUT FORECAST:
+
+  File: Country_Risk_Forecast_5Y_EnsembleWeighted.csv
+  
+  Columns:
+    - country: Country name
+    - year: 2024, 2025, 2026, 2027, 2028
+    - risk_forecast: Weighted ensemble prediction (0.0 to 1.0)
+    - risk_category: Low / Mild Low / Moderate / Mild High / High
+    - forecast_type: EnsembleWeighted
+  
+  Rows: 5 years × ~180 countries = ~900 rows
+
+================================================================================
+7. OUTPUT ARTIFACTS
+================================================================================
+
+ALL OUTPUT FILES SAVED TO: outputs/ directory
+
+CRITICAL FILES:
+
+1. Country_Risk_Forecast_5Y_EnsembleWeighted.csv
+   - RECOMMENDED PRIMARY OUTPUT for production use
+   - Contains 2024-2028 forecasts for all countries
+   - 5-year horizon provides strategic planning window
+   - Weighted combination reduces model risk
+   - Format: (country, year, risk_forecast, risk_category)
+
+2. model_selection.json
+   - METADATA FILE for dashboard and reproducibility
+   - Contains:
+     {
+       "selected_model": "EnsembleWeighted",
+       "best_single_model": "RandomForest",
+       "available_models": ["MLP", "RandomForest", "GradientBoosting", "SVM"],
+       "ensemble_weights": {w1, w2, w3, w4},
+       "train_metrics": {MAE, RMSE, R² for each model},
+       "eval_results": {backtesting results},
+       "split_info": {training/validation/test years}
+     }
+
+3. backtesting_report.csv
+   - ALL BACKTESTING METRICS
+   - Shows model performance across train/validation/test
+   - Used to justify model selection and weighting
+   - Format: (model_name, dataset, year, mae, rmse, r2)
+
+4. Combined_Dataset.csv
+   - ALL CONSOLIDATED IMF DATA
+   - 5,044 country-year observations
+   - 2001-2023
+   - Includes all WEO/FSI/MONA indicators
+
+5. Combined_Dataset_with_Observed_Risk.csv
+   - Same as above PLUS risk_index column
+   - risk_index = weighted combination of indicators
+   - Used for training target = "risk_index"
+   - Should be LOADED BY DASHBOARD
+
+INDIVIDUAL MODEL FORECASTS (Optional):
+
+6-9. Country_Risk_Forecast_5Y_[ModelName].csv
+   - Individual predictions from each of 4 models
+   - Useful for sensitivity analysis
+   - Can compare to ensemble to see blend effect
+   - Files: ..._MLP, ..._RandomForest, ..._GradientBoosting, ..._SVM
+
+OTHER:
+
+10. Country_Latest_Risk_Snapshot_[Year].csv
+    - Snapshot of latest risk categories
+    - One row per country
+    - Shows current estimated risk level
+
+11. ensemble_models/
+    - Pickled serialized model objects
+    - 4 files: mlp_model.pkl, rf_model.pkl, gb_model.pkl, svm_model.pkl
+    - Can be loaded for future predictions
+
+================================================================================
+8. DASHBOARD FEATURES
+================================================================================
+
+DASHBOARD URL: http://127.0.0.1:8050
+
+BUILD TECHNOLOGY:
+  - Dash framework (Python-based interactive web app)
+  - Plotly for interactive charting
+  - Real-time updates on user interaction
+
+MAIN INTERFACE:
+
+Section 1: Model Selection & Performance
+  - Dropdown: Select from available models to forecast
+  - Displays comparative metrics (MAE, RMSE, R²)
+  - Shows ensemble weights if EnsembleWeighted selected
+  - Shows train/val/test performance for selected model
+
+Section 2: Forecast Period Selection
+  - Range Selector: Choose year range (2024-2028)
+  - Applies to all visualizations below
+
+Section 3: Country Selection
+  - Dropdown or Multi-select: Choose country(ies) to analyze
+  - Can select single country for detailed view
+  - Can select multiple for comparison
+
+VISUALIZATIONS:
+
+Chart 1: Historical & Forecast Risk Trend
+  - X-axis: Year (2001-2028)
+  - Y-axis: Risk Index (0.0 to 1.0)
+  - Blue Line: Historical observed risk (2001-2023)
+  - Red Line: Forecasted risk (2024-2028)
+  - Color-coded background bands: Risk categories
+  - Interaction: Click/drag to zoom, hover for values
+
+Chart 2: Forecast by Risk Category
+  - Shows distribution of countries across 5 risk categories
+  - Grouped bar chart: Each year has 5 bars
+  - Colors: Green (Low) → Yellow (Moderate) → Red (High)
+  - Shows trend: Are more countries moving toward higher risk?
+
+Chart 3: Top N Countries by Risk
+  - Horizontal bar chart
+  - Sorted by predicted risk for selected year
+  - Shows 10-20 highest-risk countries
+  - Useful for identifying hotspots
+
+Chart 4: Model Comparison (if not EnsembleWeighted selected)
+  - Line chart showing predictions from all 4 models
+  - Different line colors for each model
+  - See model disagreement/convergence
+  - Shows why weighting is beneficial
+
+Section 4: Ensemble Weighting Display (if EnsembleWeighted selected)
+  - Shows contribution breakdown:
+    "This forecast is 18% MLP, 31% RandomForest, 29% GradientBoosting, 22% SVM"
+  - Visual pie/donut chart showing weight distribution
+  - Explains why certain models weighted higher
+
+Section 5: Backtesting Metrics Table
+  - Shows train/val/test MAE for each model
+  - Supports model selection justification
+  - Can filter by model or dataset type
+  - Shows year-by-year breakdown
+
+Section 6: Risk Details
+  - When country selected: Show full details
+  - Historical trend analysis
+  - Category transitions (e.g., Low→Mild High in forecast)
+  - Export option for CSV
+
+================================================================================
+9. HOW TO USE THE SYSTEM
+================================================================================
+
+COMPLETE WORKFLOW:
+
+Step 1: PREPARE DATA
+  - Place WEO, FSI, MONA CSV files in workspace directory
+  - Ensure files follow IMF naming convention (included in repo)
+  - Or download fresh from IMF website
+  - No preprocessing needed - pipeline handles it
+
+Step 2: RUN ENHANCED PIPELINE
+  Command:
+    python3 risk_pipeline_enhanced.py --base-dir . --start-year 2001 --end-year 2023 --horizon 5 --val-years 3 --test-years 2
+  
+  Parameters:
+    --start-year 2001: Data starts in 2001
+    --end-year 2023: Data ends in 2023 (latest available)
+    --horizon 5: Forecast 5 years ahead (2024-2028)
+    --val-years 3: Use 3 years (2018-2020) for validation
+    --test-years 2: Use 2 years (2021-2023) for test
+  
+  Expected Time: ~3-4 minutes (depends on machine)
+  
+  Final Output:
+    Training complete: 4 models trained on 2001-2017 data
+    Evaluation complete: Metrics computed on validation/test
+    Best model identified: e.g., "GradientBoosting (test MAE=0.0216)"
+    Ensemble weights generated: Sum to 1.0
+    Forecasts generated: 5 output CSV files + metadata
+    
+  Verification:
+    Look for: "outputs/Country_Risk_Forecast_5Y_EnsembleWeighted.csv"
+
+Step 3: VERIFY OUTPUTS
+  Command:
+    python3 verify_outputs.py
+  
+  Checks:
+    ✓ Combined_Dataset: 5,044 rows
+    ✓ EnsembleWeighted Forecast: 1180 rows (180 countries × 5 years + 80 extra)
+    ✓ Backtesting Report: Present with metrics
+    ✓ Ensemble Models: 4 pickled model files
+  
+  Expected Result: "ALL COMPONENTS VERIFIED SUCCESSFULLY"
+
+Step 4: LAUNCH DASHBOARD
+  Command:
+    python3 dashboard_enhanced.py
+  
+  Output:
+    Dash is running on http://127.0.0.1:8050/
+    WARNING: Do not share your Dash app externally
+  
+  Access: Open browser to http://127.0.0.1:8050
+  
+  to stop: Ctrl+C in terminal
+
+Step 5: EXPLORE FORECASTS IN DASHBOARD
+  - Select "EnsembleWeighted" from model dropdown
+  - Pick a country to analyze
+  - Review 5-year forecast trend
+  - Check risk category transitions
+  - Export results if needed
+
+Step 6: GENERATE REPORTS
+  Recommended approaches:
+    a) Export CSV manually from dashboard
+    b) Read outputs/ CSVs programmatically
+    c) Use dashboard export button for styled HTML reports
+
+================================================================================
+10. INTERPRETATION GUIDE
+================================================================================
+
+READING RISK FORECASTS:
+
+Raw Risk Score (0.0 to 1.0):
+  - 0.0: No crisis risk (hypothetical)
+  - 0.1: Very low risk (stable, predictable economy)
+  - 0.3: Low risk (healthy economy, rare shocks)
+  - 0.5: TRANSITION POINT (moderate risk, watch carefully)
+  - 0.7: High risk (potential for crisis in next 1-2 years)
+  - 0.9: Extreme risk (crisis likely imminent)
+  - 1.0: Crisis conditions (rarely reached ~ only during outbreaks)
+
+Risk Category Meanings:
+
+  🟢 LOW (0.0-0.2)
+    Characteristics: Strong GDP growth, low debt, stable currency
+    Example Countries: Switzerland, Norway, Canada
+    Recommendation: Standard portfolio allocation
+    Action: Monitor but no special focus needed
+
+  🟢 MILD LOW (0.2-0.4)
+    Characteristics: Moderate growth, manageable debt, some volatility
+    Example Countries: Germany, France, Australia
+    Recommendation: Standard approaches, minor caution
+    Action: Regular quarterly reviews
+
+  🟡 MODERATE (0.4-0.6)
+    Characteristics: Mixed signals - some strengths, some weaknesses
+    Example Countries: Spain, Italy, Mexico
+    Recommendation: Increased monitoring required
+    Action: Monthly tracking, prepare contingency plans
+
+  🟠 MILD HIGH (0.6-0.8)
+    Characteristics: Significant vulnerabilities, elevated uncertainty
+    Example Countries: Argentina, Turkey, Lebanon
+    Recommendation: Heightened vigilance, stress testing
+    Action: Weekly monitoring, consider risk hedging
+
+  🔴 HIGH (0.8-1.0)
+    Characteristics: Imminent crisis conditions, policy imbalances
+    Example Countries: Venezuela, Argentina (crisis periods), Sri Lanka
+    Recommendation: Severe caution, consider exit strategies
+    Action: Daily monitoring, immediate response plans
+
+INTERPRETING FORECASTS:
+
+Scenario 1: Flat Forecast
+  Trend: Risk stays around 0.35 for 5 years
+  Interpretation: Country likely to remain stable
+  Implication: Plan long-term engagement, predictable environment
+
+Scenario 2: Upward Trend
+  2024: 0.30 → 2025: 0.38 → 2026: 0.45 → 2027: 0.52 → 2028: 0.60
+  Interpretation: Risk INCREASING, moving toward crisis conditions
+  Implication: Monitor catalysts, prepare response strategies, consider reduction
+
+Scenario 3: Sharp Spike
+  2025: 0.35 → 2026: 0.72
+  Interpretation: SUDDEN CRISIS IN 2026, likely external shock
+  Implication: Urgent analysis needed (war, trade war, commodity shock?)
+
+Scenario 4: Downward Trend
+  2024: 0.65 → 2025: 0.58 → 2026: 0.48 → 2027: 0.38 → 2028: 0.30
+  Interpretation: RECOVERY from current crisis, improving fundamentals
+  Implication: Monitor for sustainability, watch for renewed shocks
+
+ENSEMBLE vs. SINGLE MODEL:
+
+When to Use EnsembleWeighted:
+  ✓ Strategic planning (>1 year horizon)
+  ✓ Risk allocation decisions
+  ✓ When model uncertainty is high
+  ✓ RECOMMENDED for most applications
+
+When to Compare to Individual Models:
+  ✓ Sensitivity analysis
+  ✓ Model disagreement indicates uncertainty (be cautious)
+  ✓ If ensemble prediction conflicts with domain expertise
+  ✓ Academic research on model diversity
+
+Example Ensemble Benefit:
+  Single MLP says: Country A risk is 0.42 (Moderate)
+  Single RF says: Country A risk is 0.38 (Mild Low)
+  Single GB says: Country A risk is 0.45 (Moderate)
+  Single SVM says: Country A risk is 0.40 (Mild Low)
+  Ensemble-weighted: 0.41 (Moderate) - represents consensus
+  
+  The ensemble smooths extreme model predictions and reduces
+  the risk of one model's systematic bias affecting the forecast.
+
+CATEGORY INTERPRETATION:
+
+Why Five Categories Instead of Binary?
+  - Binary (Crisis Yes/No) too simplistic
+  - Five categories capture gradient of risk
+  - Allows actionable thresholds:
+    * <0.4: Continue normal operations
+    * 0.4-0.6: Increase scrutiny
+    * >0.6: Prepare contingency plans
+
+Year-over-Year Comparisons:
+  Compare category transitions to detect trends:
+  Country A Forecast:
+    2024: Moderate (0.45) → improving
+    2025: Mild Low (0.38) → stability
+    2026: Mild Low (0.35) → stable
+
+  This 3-category drop suggests improving fundamentals.
+
+Cross-Country Comparisons:
+  Dashboard shows distribution: "In 2026, 45 countries forecast High risk"
+  Compared to 2024 baseline: Has risk concentration increased?
+  Signals potential systemic stress vs. idiosyncratic shocks.
+
+BASELINE vs. FORECAST:
+
+Historical Average:
+  Country A average risk 2001-2023: 0.38 (Mild Low)
+  Forecast for 2026: 0.52 (Moderate)
+  
+  Interpretation: ABOVE HISTORICAL AVERAGE - something is changing
+
+Recent Trajectory:
+  2023 actual: 0.35 (Mild Low)
+  2024 forecast: 0.38
+  2025 forecast: 0.42
+  2026 forecast: 0.47
+  
+  Interpretation: Gradual deterioration, watch for breakpoint around 0.50
+
+MODEL CONFIDENCE:
+
+High Confidence Forecasts (Low Ensemble Disagreement):
+  All 4 models agree: 0.35-0.38 range
+  → High confidence, lower uncertainty
+  → Use for firm decisions
+
+Low Confidence Forecasts (High Ensemble Disagreement):
+  MLP: 0.32, RF: 0.55, GB: 0.38, SVM: 0.50
+  → Models disagree widely
+  → High uncertainty, requires domain knowledge
+  → Use for scenario planning, not firm decisions
+
+PRODUCTION RECOMMENDATIONS:
+
+1. USE EnsembleWeighted for primary forecast
+2. CHECK model disagreement in supporting analysis
+3. CROSS-REFERENCE with domain experts
+4. UPDATE forecasts QUARTERLY with new data
+5. TRACK actual vs. predicted for calibration
+6. ADJUST portfolio risk based on category trends
+7. FLAG sudden risk spikes for immediate investigation
+
+================================================================================
+
+END OF DOCUMENTATION
+
+For technical questions or issues:
+- Review README.md for setup
+- Check requirements.txt for dependencies
+- Run verify_outputs.py to validate system health
+- Review model implementation in models.py
+- Check validation logic in validation.py
+
+For forecasting questions:
+- Review "Interpretation Guide" section above
+- Check backtesting_report.csv for model performance
+- Consult model_selection.json for selection rationale
+- Review ensemble weights to understand model contributions
+
+================================================================================

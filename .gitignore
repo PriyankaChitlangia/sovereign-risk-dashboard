@@ -1,0 +1,10 @@
+__pycache__/
+dataset_*.csv
+*.xls
+*.xlsx
+*.pdf
+*.docx
+scratch/
+.env
+DownloadData.*
+weoapr2025all.xls
