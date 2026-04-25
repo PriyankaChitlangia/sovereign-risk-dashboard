@@ -133,7 +133,7 @@ def get_base64_of_bin_file(bin_file):
         data = f.read()
     return base64.b64encode(data).decode()
 
-bg_img_path = r"C:\Users\priya\.gemini\antigravity\brain\cc2af733-337a-4608-89d7-323c0461752a\macro_finance_concept_1777046328204.png"
+bg_img_path = r"assets\macro_finance_concept_1777046328204.png"
 if os.path.exists(bg_img_path):
     img_b64 = get_base64_of_bin_file(bg_img_path)
     st.markdown(f"""
@@ -253,7 +253,7 @@ if page == "Overview & Methodology":
         """, unsafe_allow_html=True)
         
     with col2:
-        img_path2 = r"C:\Users\priya\.gemini\antigravity\brain\cc2af733-337a-4608-89d7-323c0461752a\risk_dashboard_concept_1777046509974.png"
+        img_path2 = r"assets\risk_dashboard_concept_1777046509974.png"
         if os.path.exists(img_path2):
             img_b64_2 = get_base64_of_bin_file(img_path2)
             st.markdown(f'<img src="data:image/png;base64,{img_b64_2}" style="width: 100%; height: 280px; object-fit: cover; border-radius: 8px; margin-bottom: 10px;">', unsafe_allow_html=True)
